@@ -1,2 +1,24 @@
-# LAC
-Lazy API Coder
+# LAC -- Lazy API Coder
+
+This tool is intended to generate go types from JSON it is inspired in @mholt 's wonderful [JSON to Go](https://github.com/mholt/json-to-go) which I used extensively in a recent integration project and left me wishing I had something I could run to generate dumb types from a set of API sample responses as part of my Make process.
+
+
+# Usage
+
+```
+      --imports strings              imports to be added.
+      --package string               the package of the module where the structs will live. (default "main")
+      --source strings               list of files to use as source, wildcards are valid (such as *.json).
+      --structnames stringToString   alternative struct names for types, only full matches will be replaced use either comma separated match=replacement or pass this flag multiple times.
+      --target string                path to the go file where structs will be created. If none provided stdout will be used.
+```
+All types are exported.
+
+For the outer types, the file names (without extension) are used, it is recommended that you either name the file as you want the outer struct to be called or provide a replacement in `--structnames`
+
+# TODO:
+
+* A ton of tests, I currently use the [api examples of JIRA](https://developer.atlassian.com/cloud/jira/platform/rest/v3) as a test but I am not sure I am free to distribute these as tests so ill leave you to get them.
+* Accept stdin as input.
+* Add input from a struct comment and add the fields to said struct
+* Suport inline structs
