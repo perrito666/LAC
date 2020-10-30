@@ -21,6 +21,8 @@ type config struct {
 	targetPackage string
 	fileTypeMap   map[string]string
 	imports       []string
+	replaceTypes  map[string]string
+	typesForItems map[string]string
 }
 
 // ErrBadUsage should be raised when flags were improperly ivoked
@@ -44,8 +46,10 @@ func parseFlags() (*config, error) {
 	flag.CommandLine.StringVar(&c.targetFile, "target", "", "path to the go file where structs will be created. If none provided stdout will be used.")
 	flag.CommandLine.StringVar(&c.targetPackage, "package", "main", "the package of the module where the structs will live.")
 	flag.CommandLine.StringSliceVar(&c.sourceFiles, "source", []string{}, "list of files to use as source, wildcards are valid (such as *.json).")
-	flag.CommandLine.StringToStringVar(&c.fileTypeMap, "structnames", map[string]string{}, "alternative struct names for types, only full matches will be replaced use either comma separated match=replacement or pass this flag multiple times.")
+	flag.CommandLine.StringToStringVar(&c.fileTypeMap, "structnames", map[string]string{}, "alternative struct names for types, only full matches will be replaced use either comma separated match=replacement or pass this flag multiple times, the names before capitalization are considered for the match. ie `issuetype=someotherstructname`")
 	flag.CommandLine.StringSliceVar(&c.imports, "imports", []string{}, "imports to be added")
+	flag.CommandLine.StringToStringVar(&c.replaceTypes, "replacetypes", map[string]string{}, "replace basic types with your own, only full matching with the type name is done, remember to add them to imports if they depend on external packages. ie `float64=float32`")
+	flag.CommandLine.StringToStringVar(&c.typesForItems, "typesforitems", map[string]string{}, "replace types of struct members specifying the path. ie `StructName.Member=package.CustomType` ")
 
 	if err := flag.CommandLine.Parse(os.Args); err != nil {
 		return nil, &ErrBadUsage{err: err}
@@ -322,6 +326,16 @@ func makeMeCode(c *config, typeMap map[string]map[string]maybeType, out io.Write
 			capitalizedFN := capitalize(fn)
 			if unicode.IsDigit(rune(capitalizedFN[0])) {
 				capitalizedFN = "N" + capitalizedFN
+			}
+			// is this type a type we want replaced?
+			replacementType, ok := c.replaceTypes[tn]
+			if ok {
+				tn = replacementType
+			}
+			// is this one of the paths for which we specified a type?
+			typeForPath, ok := c.typesForItems[fmt.Sprintf("%s.%s", structName, capitalizedFN)]
+			if ok {
+				tn = typeForPath
 			}
 			code.WriteString(fmt.Sprintf("\t%s %s `json:\"%s\"`\n", capitalizedFN, tn, fn))
 		}
