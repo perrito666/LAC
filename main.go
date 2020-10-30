@@ -23,6 +23,21 @@ type config struct {
 	imports       []string
 }
 
+// ErrBadUsage should be raised when flags were improperly ivoked
+type ErrBadUsage struct {
+	err error
+}
+
+func (err *ErrBadUsage) Error() string {
+	return err.Error()
+}
+
+func (err *ErrBadUsage) Unwrap() error {
+	return err.err
+}
+
+var _ error = &ErrBadUsage{}
+
 func parseFlags() (*config, error) {
 	c := &config{}
 
@@ -48,21 +63,6 @@ func main() {
 		os.Exit(1)
 	}
 }
-
-// ErrBadUsage should be raised when flags were improperly ivoked
-type ErrBadUsage struct {
-	err error
-}
-
-func (err *ErrBadUsage) Error() string {
-	return err.Error()
-}
-
-func (err *ErrBadUsage) Unwrap() error {
-	return err.err
-}
-
-var _ error = &ErrBadUsage{}
 
 func realMain() error {
 	c, err := parseFlags()
@@ -91,8 +91,41 @@ func realMain() error {
 	return nil
 }
 
+func jsonIntoMap(c *config) (map[string][]interface{}, error) {
+	expanded := make([]string, 0, len(c.sourceFiles))
+	for _, sf := range c.sourceFiles {
+		g, err := filepath.Glob(sf)
+		if err != nil {
+			expanded = append(expanded, sf)
+			continue
+		}
+		expanded = append(expanded, g...)
+	}
+	result := map[string][]interface{}{}
+	for _, f := range expanded {
+		var tgt interface{}
+		fp, err := os.Open(f)
+		if err != nil {
+			return nil, fmt.Errorf("operning json file: %w", err)
+		}
+		if err := json.NewDecoder(fp).Decode(&tgt); err != nil {
+			return nil, fmt.Errorf("decoding file contents: %w", err)
+		}
+		switch t := tgt.(type) {
+		case map[string]interface{}:
+			result[f] = []interface{}{t}
+		case []interface{}:
+			result[f] = t
+		case string: // yeah, valid but cmoon
+			result[f] = []interface{}{t}
+		default:
+			return nil, fmt.Errorf("the json is %T and I have no clue what to do with it", t)
+		}
+	}
+	return result, nil
+}
+
 func typesFromMap(c *config, m map[string][]interface{}) (map[string]map[string]maybeType, error) {
-	// TODO use the map to struct names, remove extensions otherwise
 	types := map[string]map[string]maybeType{}
 	for tn, t := range m {
 		for _, tf := range t {
@@ -114,6 +147,49 @@ func typesFromMap(c *config, m map[string][]interface{}) (map[string]map[string]
 	return types, nil
 }
 
+func unWrapMap(c *config, m map[string]interface{}, name string, typeMap map[string]map[string]maybeType) (map[string]maybeType, error) {
+	aType := map[string]maybeType{}
+	for fn, f := range m {
+		var it = maybeType{}
+		switch field := f.(type) {
+		case map[string][]interface{}:
+			// TODO handle this type (it is rather uncommon)
+			continue
+		case []interface{}:
+			// Have no clue what this is
+			it.isArray = true
+			if len(field) == 0 {
+				it.nameOftype = "interface{}"
+				break
+			}
+			switch innerField := field[0].(type) {
+			case map[string]interface{}:
+				uit, err := unWrapMap(c, innerField, fn, typeMap)
+				if err != nil {
+					return nil, fmt.Errorf("unwrapping type %s: %w", fn, err)
+				}
+
+				tName, _ := typeExists(fn, name, c, uit, typeMap)
+				it.nameOftype = tName
+			default:
+				it.typeOf = reflect.TypeOf(innerField)
+			}
+
+		case map[string]interface{}:
+			uit, err := unWrapMap(c, field, fn, typeMap)
+			if err != nil {
+				return nil, fmt.Errorf("unwrapping type %s: %w", fn, err)
+			}
+			tName, _ := typeExists(fn, name, c, uit, typeMap)
+			it.nameOftype = tName
+		default:
+			it.typeOf = reflect.TypeOf(f)
+		}
+		aType[fn] = it
+	}
+	return aType, nil
+}
+
 func typeExists(name, parent string, c *config, ours map[string]maybeType, typeMap map[string]map[string]maybeType) (string, bool) {
 	foundName := name
 	newName, ok := c.fileTypeMap[foundName]
@@ -130,7 +206,6 @@ func typeExists(name, parent string, c *config, ours map[string]maybeType, typeM
 				break
 			}
 		}
-		// TODO find parent_name named ones
 		typeMap[foundName] = ours
 		return foundName, false
 	}
@@ -141,7 +216,7 @@ func typeExists(name, parent string, c *config, ours map[string]maybeType, typeM
 			continue
 		}
 		if !v.Equals(&vo) {
-			newName := fmt.Sprintf("%s_%s", parent, foundName)
+			newName := fmt.Sprintf("%s.%s", parent, foundName)
 			typeMap[newName] = ours
 			return newName, false
 		}
@@ -197,6 +272,8 @@ func capitalize(s string) string {
 	if s == "interface{}" {
 		return s
 	}
+	// . is likely a parented type
+	s = strings.Replace(s, ".", "_", -1)
 	parts := strings.Split(s, "_")
 	for i, p := range parts {
 		switch strings.ToLower(p) {
@@ -264,88 +341,4 @@ func makeMeCode(c *config, typeMap map[string]map[string]maybeType, out io.Write
 	heading.WriteString("\n")
 	out.Write([]byte(heading.String()))
 	out.Write([]byte(code.String()))
-}
-
-func unWrapMap(c *config, m map[string]interface{}, name string, typeMap map[string]map[string]maybeType) (map[string]maybeType, error) {
-	aType := map[string]maybeType{}
-	for fn, f := range m {
-		var it maybeType
-		switch field := f.(type) {
-		case map[string][]interface{}:
-			continue
-			// blergh, iterate it and handle each interface
-		case []interface{}:
-			if len(field) == 0 {
-				it = maybeType{
-					isArray:    true,
-					nameOftype: "interface{}",
-				}
-			} else {
-				switch innerField := field[0].(type) {
-				case map[string]interface{}:
-					uit, err := unWrapMap(c, innerField, fn, typeMap) // unwrap type instead
-					if err != nil {
-						return nil, fmt.Errorf("unwrapping type %s: %w", fn, err)
-					}
-
-					tName, _ := typeExists(fn, name, c, uit, typeMap)
-					it = maybeType{
-						isArray:    true,
-						nameOftype: tName,
-					}
-				default:
-					it = maybeType{
-						isArray: true,
-						typeOf:  reflect.TypeOf(innerField)}
-				}
-			}
-		case map[string]interface{}:
-			uit, err := unWrapMap(c, field, fn, typeMap) // unwrap type instead
-			if err != nil {
-				return nil, fmt.Errorf("unwrapping type %s: %w", fn, err)
-			}
-			tName, _ := typeExists(fn, name, c, uit, typeMap)
-			it = maybeType{
-				nameOftype: tName,
-			}
-		default:
-			it = maybeType{typeOf: reflect.TypeOf(f)}
-		}
-		aType[fn] = it
-	}
-	return aType, nil
-}
-
-func jsonIntoMap(c *config) (map[string][]interface{}, error) {
-	expanded := make([]string, 0, len(c.sourceFiles))
-	for _, sf := range c.sourceFiles {
-		g, err := filepath.Glob(sf)
-		if err != nil {
-			expanded = append(expanded, sf)
-			continue
-		}
-		expanded = append(expanded, g...)
-	}
-	result := map[string][]interface{}{}
-	for _, f := range expanded {
-		var tgt interface{}
-		fp, err := os.Open(f)
-		if err != nil {
-			return nil, fmt.Errorf("operning json file: %w", err)
-		}
-		if err := json.NewDecoder(fp).Decode(&tgt); err != nil {
-			return nil, fmt.Errorf("decoding file contents: %w", err)
-		}
-		switch t := tgt.(type) {
-		case map[string]interface{}:
-			result[f] = []interface{}{t}
-		case []interface{}:
-			result[f] = t
-		case string: // yeah, valid but cmoon
-			result[f] = []interface{}{t}
-		default:
-			return nil, fmt.Errorf("the json is %T and I have no clue what to do with it", t)
-		}
-	}
-	return result, nil
 }
