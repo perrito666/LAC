@@ -278,6 +278,8 @@ func capitalize(s string) string {
 	}
 	// . is likely a parented type
 	s = strings.Replace(s, ".", "_", -1)
+	s = strings.Replace(s, "-", "_", -1)
+	s = strings.Replace(s, "\\", "_", -1)
 	parts := strings.Split(s, "_")
 	for i, p := range parts {
 		switch strings.ToLower(p) {
@@ -285,6 +287,8 @@ func capitalize(s string) string {
 			p = "URL"
 		case "id":
 			p = "ID"
+		case "json":
+			p = "JSON"
 		}
 		if strings.HasSuffix(p, "Url") {
 			p = strings.TrimSuffix(p, "Url") + "URL"
@@ -327,6 +331,7 @@ func makeMeCode(c *config, typeMap map[string]map[string]maybeType, out io.Write
 			if unicode.IsDigit(rune(capitalizedFN[0])) {
 				capitalizedFN = "N" + capitalizedFN
 			}
+
 			// is this type a type we want replaced?
 			replacementType, ok := c.replaceTypes[tn]
 			if ok {
@@ -336,6 +341,9 @@ func makeMeCode(c *config, typeMap map[string]map[string]maybeType, out io.Write
 			typeForPath, ok := c.typesForItems[fmt.Sprintf("%s.%s", structName, capitalizedFN)]
 			if ok {
 				tn = typeForPath
+			}
+			if tn == "" {
+				tn = "interface{}"
 			}
 			code.WriteString(fmt.Sprintf("\t%s %s `json:\"%s\"`\n", capitalizedFN, tn, fn))
 		}

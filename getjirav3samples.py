@@ -52,9 +52,9 @@ def extract_examples_json(src=""):
                     try:
                         ex_str = app_json["example"]
                         if type(ex_str) in [T_DICT, T_LIST]:
-                            example = pformat(json.dumps(ex_str))
+                            example = json.dumps(ex_str)
                         else:
-                            example = pformat(json.loads(ex_str))
+                            example = json.dumps(json.loads(ex_str))
                     except json.JSONDecodeError:
                         print("COULD NOT PARSE: {}".format(app_json["example"]))
                         continue
