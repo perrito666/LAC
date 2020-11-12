@@ -76,9 +76,10 @@ func realMain() error {
 		return fmt.Errorf("flags step: %w", err)
 	}
 	var ts map[string]map[string]maybeType
-	var tns map[string]string
+	var tns = map[string]string{}
+	var extraComments = map[string]string{}
 	if len(c.swaggerFile) != 0 {
-		ts, err = schemaIntoMap(c)
+		ts, extraComments, err = schemaIntoMap(c)
 		if err != nil {
 			return fmt.Errorf("reading swagger file into maps: %w", err)
 		}
@@ -102,7 +103,7 @@ func realMain() error {
 	} else {
 		out = os.Stdout
 	}
-	makeMeCode(c, ts, tns, out)
+	makeMeCode(c, ts, tns, extraComments, out)
 	return nil
 }
 
@@ -169,6 +170,7 @@ type SwaggerProperty struct {
 // SwaggerSchema represents the Schema attribute on swagger schemas
 type SwaggerSchema struct {
 	Type            SwaggerType                `json:"type,omitempty"`
+	Description     string                     `json:"description,omitempty"`
 	Properties      map[string]SwaggerProperty `json:"properties,omitempty"`
 	MultiProperties `json:",inline"`
 }
@@ -191,9 +193,10 @@ func typeFromRef(ref string) string {
 	return ref[i+1:]
 }
 
-func processMultiple(multi []OnlyRef) maybeType {
+func processMultiple(multi []OnlyRef, description string) maybeType {
 	result := maybeType{
-		multiType: make([]string, 0, len(multi)),
+		description: description,
+		multiType:   make([]string, 0, len(multi)),
 	}
 	for _, m := range multi {
 		result.multiType = append(result.multiType, typeFromRef(m.Ref))
@@ -206,19 +209,20 @@ func resolveSwaggerType(prop SwaggerProperty) maybeType {
 	case STArray:
 		if prop.Items.Ref != "" {
 			return maybeType{
-				isArray:    true,
-				nameOftype: typeFromRef(prop.Items.Ref),
+				isArray:     true,
+				description: prop.Description,
+				nameOftype:  typeFromRef(prop.Items.Ref),
 			}
 		}
 		var fieldType maybeType
 		if len(prop.Items.AllOf) > 0 {
-			fieldType = processMultiple(prop.Items.AllOf)
+			fieldType = processMultiple(prop.Items.AllOf, prop.Description)
 		}
 		if len(prop.Items.OneOf) > 0 {
-			fieldType = processMultiple(prop.Items.OneOf)
+			fieldType = processMultiple(prop.Items.OneOf, prop.Description)
 		}
 		if len(prop.Items.AnyOf) > 0 {
-			fieldType = processMultiple(prop.Items.AnyOf)
+			fieldType = processMultiple(prop.Items.AnyOf, prop.Description)
 		}
 		if prop.Items.Type != "" {
 			fieldType = resolveSwaggerType(SwaggerProperty{
@@ -228,51 +232,72 @@ func resolveSwaggerType(prop SwaggerProperty) maybeType {
 		fieldType.isArray = true
 		return fieldType
 	case STBoolean:
-		return maybeType{typeOf: reflect.TypeOf(bool(true))}
+		return maybeType{
+			description: prop.Description,
+			typeOf:      reflect.TypeOf(bool(true)),
+		}
 	case STInteger:
-		return maybeType{typeOf: reflect.TypeOf(int64(1))}
+		return maybeType{
+			description: prop.Description,
+			typeOf:      reflect.TypeOf(int64(1)),
+		}
 	case STNumber:
-		return maybeType{typeOf: reflect.TypeOf(float64(1.1))}
+		return maybeType{
+			description: prop.Description,
+			typeOf:      reflect.TypeOf(float64(1.1)),
+		}
 	case STString:
-		return maybeType{typeOf: reflect.TypeOf("")}
+		return maybeType{
+			description: prop.Description,
+			typeOf:      reflect.TypeOf(""),
+		}
 	case STObject:
 		if len(prop.AllOf) > 0 {
 			fmt.Println("processing all of")
-			return processMultiple(prop.AllOf)
+			return processMultiple(prop.AllOf, prop.Description)
 		}
 		if len(prop.OneOf) > 0 {
 			fmt.Println("processing one of")
-			return processMultiple(prop.OneOf)
+			return processMultiple(prop.OneOf, prop.Description)
 		}
 		if len(prop.AnyOf) > 0 {
 			fmt.Println("processing any of")
-			return processMultiple(prop.AnyOf)
+			return processMultiple(prop.AnyOf, prop.Description)
 		}
 		if prop.AdditionalProperties != nil {
 			return resolveSwaggerType(*prop.AdditionalProperties)
 		}
 		if prop.Ref != "" {
 			return maybeType{
-				nameOftype: typeFromRef(prop.Ref),
+				description: prop.Description,
+				nameOftype:  typeFromRef(prop.Ref),
 			}
 		}
-		return maybeType{}
+		return maybeType{
+			description: prop.Description,
+		}
 	default:
 		// No type can happen for multi items
 		if len(prop.AllOf) > 0 {
 			fmt.Println("processing all of")
-			return processMultiple(prop.AllOf)
+			return processMultiple(prop.AllOf, prop.Description)
 		}
 		if len(prop.OneOf) > 0 {
 			fmt.Println("processing one of")
-			return processMultiple(prop.OneOf)
+			return processMultiple(prop.OneOf, prop.Description)
 		}
 		if len(prop.AnyOf) > 0 {
 			fmt.Println("processing any of")
-			return processMultiple(prop.AnyOf)
+			return processMultiple(prop.AnyOf, prop.Description)
+		}
+		if prop.Ref != "" {
+			return maybeType{
+				description: prop.Description,
+				nameOftype:  typeFromRef(prop.Ref),
+			}
 		}
 	}
-	return maybeType{}
+	return maybeType{description: prop.Description}
 }
 
 func processProperty(ps map[string]SwaggerProperty) map[string]maybeType {
@@ -285,41 +310,43 @@ func processProperty(ps map[string]SwaggerProperty) map[string]maybeType {
 	return t
 }
 
-func schemaIntoMap(c *config) (map[string]map[string]maybeType, error) {
+func schemaIntoMap(c *config) (map[string]map[string]maybeType, map[string]string, error) {
 
 	result := map[string]map[string]maybeType{}
+	extraComments := map[string]string{}
 
 	var tgt SwaggerSimplification
 	fp, err := os.Open(c.swaggerFile)
 	if err != nil {
-		return nil, fmt.Errorf("opening json file: %w", err)
+		return nil, nil, fmt.Errorf("opening json file: %w", err)
 	}
 	if err := json.NewDecoder(fp).Decode(&tgt); err != nil {
-		return nil, fmt.Errorf("decoding file contents: %w", err)
+		return nil, nil, fmt.Errorf("decoding file contents: %w", err)
 	}
 	for compName, component := range tgt.Components.Schemas {
 		newType := map[string]maybeType{}
+		extraComments[compName] = component.Description
 		switch component.Type {
 		case STObject:
 			fmt.Printf("processing %s\n", compName)
 			if len(component.AllOf) > 0 {
 				fmt.Println("processing all of")
 				result[compName] = map[string]maybeType{
-					"": processMultiple(component.AllOf),
+					"": processMultiple(component.AllOf, component.Description),
 				}
 				continue
 			}
 			if len(component.OneOf) > 0 {
 				fmt.Println("processing one of")
 				result[compName] = map[string]maybeType{
-					"": processMultiple(component.OneOf),
+					"": processMultiple(component.OneOf, component.Description),
 				}
 				continue
 			}
 			if len(component.AnyOf) > 0 {
 				fmt.Println("processing any of")
 				result[compName] = map[string]maybeType{
-					"": processMultiple(component.AnyOf),
+					"": processMultiple(component.AnyOf, component.Description),
 				}
 				continue
 			}
@@ -329,7 +356,7 @@ func schemaIntoMap(c *config) (map[string]map[string]maybeType, error) {
 			fmt.Printf("%s is just a %s", compName, component.Type)
 		}
 	}
-	return result, nil
+	return result, extraComments, nil
 }
 
 func jsonIntoMap(c *config) (map[string][]interface{}, error) {
@@ -616,7 +643,10 @@ func capitalize(s string) string {
 	return strings.Join(parts, "")
 }
 
-func makeMeCode(c *config, typeMap map[string]map[string]maybeType, outerTypeNames map[string]string, out io.Writer) {
+func makeMeCode(c *config, typeMap map[string]map[string]maybeType,
+	outerTypeNames map[string]string,
+	extraComments map[string]string,
+	out io.Writer) {
 	heading := &strings.Builder{}
 	heading.WriteString(fmt.Sprintf("package %s\n", c.targetPackage))
 	imports := map[string]bool{}
@@ -647,6 +677,10 @@ func makeMeCode(c *config, typeMap map[string]map[string]maybeType, outerTypeNam
 		structName := capitalize(tk)
 
 		code.WriteString(fmt.Sprintf("// %s is auto generated by github.com/perrito666/LAC from \"%s\" json file\n", structName, fileName))
+		ec, ok := extraComments[tk]
+		if ok {
+			code.WriteString(fmt.Sprintf("// %s \n", strings.Replace(ec, "\n", "\n// ", -1)))
+		}
 		code.WriteString(fmt.Sprintf("type %s struct {\n", structName))
 		for _, fn := range fieldNames {
 			f := tvs[fn]
@@ -680,7 +714,7 @@ func makeMeCode(c *config, typeMap map[string]map[string]maybeType, outerTypeNam
 				tn = "*" + tn // otherwise we get an illegal cycle
 			}
 			if f.description != "" {
-				code.WriteString(fmt.Sprintf("// %s\n", f.description))
+				code.WriteString(fmt.Sprintf("// %s is the %s\n", capitalizedFN, strings.Replace(f.description, "\n", "\n// ", -1)))
 			}
 			if f.IsMultiple() {
 				code.WriteString(fmt.Sprintf("\t%s  struct {\n", capitalizedFN))
