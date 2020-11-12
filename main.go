@@ -130,16 +130,19 @@ type SwaggerXML struct {
 	Attribute string `json:"attribute,omitempty"`
 }
 
+// OnlyRef represents a simple object that only contains a ref to another component.
 type OnlyRef struct {
 	Ref string `json:"$ref,omitempty"`
 }
 
+// MultiProperties holds the bulk of multiple option properties.
 type MultiProperties struct {
 	AllOf []OnlyRef `json:"allOf,omitempty"` // for now we only support Ref
 	AnyOf []OnlyRef `json:"anyOf,omitempty"` // for now we only support Ref
 	OneOf []OnlyRef `json:"oneOf,omitempty"` //for now we only support Ref
 }
 
+// MetaSwaggerProperty holds the set of common fields to several properties.
 type MetaSwaggerProperty struct {
 	Type            SwaggerType `json:"type,omitempty"`
 	Ref             string      `json:"$ref,omitempty"`
@@ -254,6 +257,20 @@ func resolveSwaggerType(prop SwaggerProperty) maybeType {
 			}
 		}
 		return maybeType{}
+	default:
+		// No type can happen for multi items
+		if len(prop.AllOf) > 0 {
+			fmt.Println("processing all of")
+			return processMultiple(prop.AllOf)
+		}
+		if len(prop.OneOf) > 0 {
+			fmt.Println("processing one of")
+			return processMultiple(prop.OneOf)
+		}
+		if len(prop.AnyOf) > 0 {
+			fmt.Println("processing any of")
+			return processMultiple(prop.AnyOf)
+		}
 	}
 	return maybeType{}
 }
@@ -519,11 +536,15 @@ type maybeType struct {
 	description      string
 }
 
+func (m *maybeType) IsMultiple() bool {
+	return len(m.multiType) > 0
+}
+
 func (m *maybeType) Resolve() (string, string) {
 	if len(m.multiType) > 0 {
 		t := ""
 		for _, mt := range m.multiType {
-			t = t + `*` + mt + " `json:\",inline\"`\n"
+			t = t + `*` + capitalize(mt) + " `json:\",inline\"`\n"
 		}
 		return "", t
 	}
@@ -660,6 +681,12 @@ func makeMeCode(c *config, typeMap map[string]map[string]maybeType, outerTypeNam
 			}
 			if f.description != "" {
 				code.WriteString(fmt.Sprintf("// %s\n", f.description))
+			}
+			if f.IsMultiple() {
+				code.WriteString(fmt.Sprintf("\t%s  struct {\n", capitalizedFN))
+				code.WriteString(fmt.Sprintf("\t%s \n", tn))
+				code.WriteString(fmt.Sprintf("\t} `json:\"%s\"`\n", fn))
+				continue
 			}
 			code.WriteString(fmt.Sprintf("\t%s %s `json:\"%s\"`\n", capitalizedFN, tn, fn))
 		}
