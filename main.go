@@ -265,7 +265,13 @@ func resolveSwaggerType(prop SwaggerProperty) maybeType {
 			return processMultiple(prop.AnyOf, prop.Description)
 		}
 		if prop.AdditionalProperties != nil {
-			return resolveSwaggerType(*prop.AdditionalProperties)
+			aps := resolveSwaggerType(*prop.AdditionalProperties)
+			if aps.nameOftype != "" {
+				aps.nameOftype = "map[string]" + aps.nameOftype
+			} else if aps.typeOf == nil {
+				aps.nameOftype = "map[string]interface{}"
+			}
+			return aps
 		}
 		if prop.Ref != "" {
 			return maybeType{
@@ -609,6 +615,9 @@ func (m *maybeType) Equals(mt *maybeType) bool {
 
 func capitalize(s string) string {
 	if s == "interface{}" {
+		return s
+	}
+	if strings.HasPrefix(s, "map[") {
 		return s
 	}
 	// . is likely a parented type
